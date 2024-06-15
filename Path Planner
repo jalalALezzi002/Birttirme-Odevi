@@ -1,0 +1,107 @@
+ 1. import numpy as np
+ 2. import copy
+ 3. import path_optimizer
+ 4. import collision_checker
+ 5. import velocity_planner
+ 6. from math import sin, cos, pi, sqrt
+ 7.  
+ 8. class LocalPlanner:
+ 9.     def __init__(self, num_paths, path_offset, circle_offsets, circle_radii,
+10.                  path_select_weight, time_gap, a_max, slow_speed,
+11.                  stop_line_buffer, prev_best_path):
+12.         self._num_paths = num_paths
+13.         self._path_offset = path_offset
+14.         self._path_optimizer = path_optimizer.PathOptimizer()
+15.         self._collision_checker = \
+16.             collision_checker.CollisionChecker(circle_offsets,
+17.                                                circle_radii,
+18.                                                path_select_weight)
+19.         self._velocity_planner = \
+20.             velocity_planner.VelocityPlanner(time_gap, a_max, slow_speed,
+21.                                              stop_line_buffer)
+22.         self.prev_best_path = []
+
+
+25. def get_goal_state_set(self, goal_index, goal_state, waypoints, ego_state):
+26.     """Gets the goal states given a goal position.
+27.     ...
+28.     """
+29.     if goal_index != len(waypoints) - 1:
+30.         delta_x = waypoints[goal_index+1][0] - waypoints[goal_index][0]
+31.         delta_y = waypoints[goal_index+1][1] - waypoints[goal_index][1]
+32.         heading = np.arctan2(delta_y, delta_x)
+33.     else: 
+34.         delta_x = waypoints[goal_index][0] - waypoints[goal_index-1][0]
+35.         delta_y = waypoints[goal_index][1] - waypoints[goal_index-1][1]
+36.         heading = np.arctan2(delta_y, delta_x)
+
+
+39.     goal_state_local = copy.copy(goal_state)
+40.     goal_state_local[0] -= ego_state[0]
+41.     goal_state_local[1] -= ego_state[1]
+42.  
+43.     goal_x = goal_state_local[0] * np.cos(ego_state[2]) + goal_state_local[1] * np.sin(ego_state[2])
+44.     goal_y = goal_state_local[0] * -np.sin(ego_state[2]) + goal_state_local[1] * np.cos(ego_state[2])
+45.     goal_t = heading - ego_state[2]
+46.     goal_v = goal_state[2]
+47.  
+48.     if goal_t > pi:
+49.         goal_t -= 2*pi
+50.     elif goal_t < -pi:
+51.         goal_t += 2*pi
+
+
+53.     goal_state_set = []
+54.     for i in range(self._num_paths):
+55.         offset = (i - self._num_paths // 2) * self._path_offset
+56.         x_offset = offset * np.cos(goal_t + pi/2)
+57.         y_offset = offset * np.sin(goal_t + pi/2)
+58.         goal_state_set.append([goal_x + x_offset, goal_y + y_offset, goal_t, goal_v])
+59.        
+60.     return goal_state_set  
+
+
+62. def plan_paths(self, goal_state_set):
+63.     """Plans the path set using the polynomial spiral optimization.
+64.     ...
+65.     """
+66.     paths = []
+67.     path_validity = []
+68.     for goal_state in goal_state_set:
+69.         path = self._path_optimizer.optimize_spiral(goal_state[0], 
+70.                                                     goal_state[1], 
+71.                                                     goal_state[2])
+72.         if np.linalg.norm([path[0][-1] - goal_state[0], 
+73.                            path[1][-1] - goal_state[1], 
+74.                            path[2][-1] - goal_state[2]]) > 0.1:
+75.             path_validity.append(False)
+76.         else:
+77.             paths.append(path)
+78.             path_validity.append(True)
+79.     return paths, path_validity
+
+
+81. def transform_paths(paths, ego_state):
+ 82.     """ Converts the paths to the global coordinate frame.
+ 83.     ...
+ 84.     """
+ 85.     transformed_paths = []
+ 86.     for path in paths:
+ 87.         x_transformed = []
+ 88.         y_transformed = []
+ 89.         t_transformed = []
+ 90.  
+ 91.         for i in range(len(path[0])):
+ 92.             x_transformed.append(ego_state[0] + path[0][i]*cos(ego_state[2]) - \
+ 93.                                                 path[1][i]*sin(ego_state[2]))
+ 94.             y_transformed.append(ego_state[1] + path[0][i]*sin(ego_state[2]) + \
+ 95.                                                 path[1][i]*cos(ego_state[2]))
+ 96.             t_transformed.append(path[2][i] + ego_state[2])
+ 97.  
+ 98.         transformed_paths.append([x_transformed, y_transformed, t_transformed])
+ 99.  
+100.     return transformed_paths
+
+
+
+
