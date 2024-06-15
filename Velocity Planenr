@@ -1,0 +1,233 @@
+ 1. import numpy as np
+ 2. from math import sin, cos, pi, sqrt
+ 3.  
+ 4. 1. class VelocityPlanner:
+ 5. 2.     def __init__(self, time_gap, a_max, slow_speed, stop_line_buffer):
+ 6. 3.         self._time_gap = time_gap
+ 7. 4.         self._a_max = a_max
+ 8. 5.         self._slow_speed = slow_speed
+ 9. 6.         self._stop_line_buffer = stop_line_buffer
+10. 7.         self._prev_trajectory = [[0.0, 0.0, 0.0]]
+
+13. def get_open_loop_speed(self, timestep):
+14.     if len(self._prev_trajectory) == 1:
+15.         return self._prev_trajectory[0][2] 
+16.         
+17.     if timestep < 1e-4:
+18.         return self._prev_trajectory[0][2]
+19.  
+20.     for i in range(len(self._prev_trajectory)-1):
+21.         distance_step = np.linalg.norm(np.subtract(self._prev_trajectory[i+1][0:2], 
+22.                                                    self._prev_trajectory[i][0:2]))
+23.         velocity = self._prev_trajectory[i][2]
+24.         time_delta = distance_step / velocity
+25.  
+26.         if time_delta > timestep:
+27.             v1 = self._prev_trajectory[i][2]
+28.             v2 = self._prev_trajectory[i+1][2]
+29.             v_delta = v2 - v1
+30.             interpolation_ratio = timestep / time_delta
+31.             return v1 + interpolation_ratio * v_delta
+32.  
+33.         else:
+34.             timestep -= time_delta
+35.  
+36.     return self._prev_trajectory[-1][2]
+
+38. def compute_velocity_profile(self, path, desired_speed, ego_state, 
+39.                              closed_loop_speed, decelerate_to_stop, 
+40.                              lead_car_state, follow_lead_vehicle):
+41.     profile = []
+42.     start_speed = ego_state[3]
+43.  
+44.     if decelerate_to_stop:
+45.         profile = self.decelerate_profile(path, start_speed)
+46.     elif follow_lead_vehicle:
+47.         profile = self.follow_profile(path, start_speed, desired_speed, lead_car_state)
+48.     else:
+49.         profile = self.nominal_profile(path, start_speed, desired_speed)
+50.  
+51.     if len(profile) > 1:
+52.         interpolated_state = [(profile[1][0] - profile[0][0]) * 0.1 + profile[0][0], 
+53.                               (profile[1][1] - profile[0][1]) * 0.1 + profile[0][1], 
+54.                               (profile[1][2] - profile[0][2]) * 0.1 + profile[0][2]]
+55.         del profile[0]
+56.         profile.insert(0, interpolated_state)
+57.  
+58.     self._prev_trajectory = profile
+59.  
+60.     return profile
+
+62. def decelerate_profile(self, path, start_speed): 
+ 63.     profile = []
+ 64.     slow_speed = self._slow_speed
+ 65.     stop_line_buffer = self._stop_line_buffer
+ 66.  
+ 67.     decel_distance = calc_distance(start_speed, slow_speed, -self._a_max)
+ 68.     brake_distance = calc_distance(slow_speed, 0, -self._a_max)
+ 69.  
+ 70.     path_length = 0.0
+ 71.     for i in range(len(path[0])-1):
+ 72.         path_length += np.linalg.norm([path[0][i+1] - path[0][i], 
+ 73.                                        path[1][i+1] - path[1][i]])
+ 74.  
+ 75.     stop_index = len(path[0]) - 1
+ 76.     temp_dist = 0.0
+ 77.     while (stop_index > 0) and (temp_dist < stop_line_buffer):
+ 78.         temp_dist += np.linalg.norm([path[0][stop_index] - path[0][stop_index-1], 
+ 79.                                      path[1][stop_index] - path[1][stop_index-1]])
+ 80.         stop_index -= 1
+ 81.  
+ 82.     if brake_distance + decel_distance + stop_line_buffer > path_length:
+ 83.         speeds = []
+ 84.         vf = 0.0
+ 85.         for i in reversed(range(stop_index, len(path[0]))):
+ 86.             speeds.insert(0, 0.0)
+ 87.         for i in reversed(range(stop_index)):
+ 88.             dist = np.linalg.norm([path[0][i+1] - path[0][i], 
+ 89.                                    path[1][i+1] - path[1][i]])
+ 90.             vi = calc_final_speed(vf, self._a_max, dist)
+ 91.             if vi > start_speed:
+ 92.                 vi = start_speed
+ 93.             speeds.insert(0, vi)
+ 94.             vf = vi
+ 95.  
+ 96.         for i in range(len(speeds)):
+ 97.             profile.append([path[0][i], path[1][i], speeds[i]])
+ 98.         
+ 99.     else:
+100.         brake_index = stop_index 
+101.         temp_dist = 0.0
+102.         while (brake_index > 0) and (temp_dist < brake_distance):
+103.             temp_dist += np.linalg.norm([path[0][brake_index] - path[0][brake_index-1], 
+104.                                          path[1][brake_index] - path[1][brake_index-1]])
+105.             brake_index -= 1
+106.  
+107.         decel_index = 0
+108.         temp_dist = 0.0
+109.         while (decel_index < brake_index) and (temp_dist < decel_distance):
+110.             temp_dist += np.linalg.norm([path[0][decel_index+1] - path[0][decel_index], 
+111.                                          path[1][decel_index+1] - path[1][decel_index]])
+112.             decel_index += 1
+113.  
+114.         vi = start_speed
+115.         for i in range(decel_index): 
+116.             dist = np.linalg.norm([path[0][i+1] - path[0][i], 
+117.                                    path[1][i+1] - path[1][i]])
+118.             vf = calc_final_speed(vi, -self._a_max, dist)
+119.             if vf < slow_speed:
+120.                 vf = slow_speed
+121.  
+122.             profile.append([path[0][i], path[1][i], vi])
+123.             vi = vf
+124.  
+125.         for i in range(decel_index, brake_index):
+126.             profile.append([path[0][i], path[1][i], vi])
+127.             
+128.         for i in range(brake_index, stop_index):
+129.             dist = np.linalg.norm([path[0][i+1] - path[0][i], 
+130.                                    path[1][i+1] - path[1][i]])
+131.             vf = calc_final_speed(vi, -self._a_max, dist)
+132.             profile.append([path[0][i], path[1][i], vi])
+133.             vi = vf
+134.  
+135.         for i in range(stop_index, len(path[0])):
+136.             profile.append([path[0][i], path[1][i], 0.0])
+137.  
+138.     return profile
+
+
+140. def follow_profile(self, path, start_speed, desired_speed, lead_car_state):
+141.     profile = []
+142.     min_index = len(path[0]) - 1
+143.     min_dist = float('Inf')
+144.     for i in range(len(path)):
+145.         dist = np.linalg.norm([path[0][i] - lead_car_state[0], 
+146.                                path[1][i] - lead_car_state[1]])
+147.         if dist < min_dist:
+148.             min_dist = dist
+149.             min_index = i
+150.  
+151.     desired_speed = min(lead_car_state[2], desired_speed)
+152.     ramp_end_index = min_index
+153.     distance = min_dist
+154.     distance_gap = desired_speed * self._time_gap
+155.     while (ramp_end_index > 0) and (distance > distance_gap):
+156.         distance += np.linalg.norm([path[0][ramp_end_index] - path[0][ramp_end_index-1], 
+157.                                     path[1][ramp_end_index] - path[1][ramp_end_index-1]])
+158.         ramp_end_index -= 1
+159.  
+160.     if desired_speed < start_speed:
+161.         decel_distance = calc_distance(start_speed, desired_speed, -self._a_max)
+162.     else:
+163.         decel_distance = calc_distance(start_speed, desired_speed, self._a_max)
+164.  
+165.     vi = start_speed
+166.     for i in range(ramp_end_index + 1):
+167.         dist = np.linalg.norm([path[0][i+1] - path[0][i], 
+168.                                path[1][i+1] - path[1][i]])
+169.         if desired_speed < start_speed:
+170.             vf = calc_final_speed(vi, -self._a_max, dist)
+171.         else:
+172.             vf = calc_final_speed(vi, self._a_max, dist)
+173.  
+174.         profile.append([path[0][i], path[1][i], vi])
+175.         vi = vf
+176.  
+177.     for i in range(ramp_end_index + 1, len(path[0])):
+178.         profile.append([path[0][i], path[1][i], desired_speed])
+179.  
+180.     return profile
+
+
+
+183. def nominal_profile(self, path, start_speed, desired_speed):
+184.     pass
+185.  
+186.     # ------------------------------------------------------------------
+187.     profile = []
+188.     if desired_speed < start_speed:
+189.         accel_distance = calc_distance(start_speed, desired_speed, -self._a_max)
+190.     else:
+191.         accel_distance = calc_distance(start_speed, desired_speed, self._a_max)
+192.     ramp_end_index = 0
+193.     distance = 0.0
+194.     while (ramp_end_index < len(path[0])-1) and (distance < accel_distance):
+195.         distance += np.linalg.norm([path[0][ramp_end_index+1] - path[0][ramp_end_index], 
+196.                                     path[1][ramp_end_index+1] - path[1][ramp_end_index]])
+197.         ramp_end_index += 1
+198.     vi = start_speed
+199.     for i in range(ramp_end_index):
+200.         dist = np.linalg.norm([path[0][i+1] - path[0][i], 
+201.                                 path[1][i+1] - path[1][i]])
+202.         if desired_speed < start_speed:
+203.             vf = calc_final_speed(vi, -self._a_max, dist)
+204.             if vf < desired_speed:
+205.                 vf = desired_speed
+206.         else:
+207.             vf = calc_final_speed(vi, self._a_max, dist)
+208.             if vf > desired_speed:
+209.                 vf = desired_speed
+210.         profile.append([path[0][i], path[1][i], vi])
+211.         vi = vf
+212.     for i in range(ramp_end_index+1, len(path[0])):
+213.         profile.append([path[0][i], path[1][i], desired_speed])
+214.     return profile
+
+
+
+217. def calc_distance(v_i, v_f, a):
+218.     pass
+219.  
+220.     # ------------------------------------------------------------------
+221.     d = (v_f**2 - v_i**2) / (2 * a)
+222.     return d
+223.     # ------------------------------------------------------------------
+224.  
+225. def calc_final_speed(v_i, a, d):
+226.     pass
+227.  
+228.     v_f = np.sqrt(v_i**2 + 2*a*d)
+229.     return v_f
+
+
